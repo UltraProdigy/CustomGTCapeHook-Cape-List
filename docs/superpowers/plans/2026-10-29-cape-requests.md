@@ -80,3 +80,20 @@ updates use the documented GitHub concurrency queue (queue: max), which the
 current actionlint release does not yet recognize; all other workflow lint
 checks pass with only that known schema warning excluded. The form parses
 with js-yaml. Original cape data and CODEOWNERS remain unchanged.
+
+## Retry and copy revisions
+
+- Add an explicit automatic-title note and merged-or-closed feedback.
+- Replace closed-PR rejection with fresh, numbered branches from current master.
+- Reuse open retry PRs and recognize retry branches in existing close handling.
+- Skip optional manual-issue-close synchronization to avoid an additional handler.
+- Verify regression tests and push only to the UltraProdigy fork.
+
+Verification: all 30 tests pass, including previously closed/merged PRs with
+stale branches, reuse of open retry PRs, and declined retry PR closure. Form
+YAML, script syntax, and workflow checks pass (with only the previously
+documented actionlint queue-schema exception).
+
+Final review regression: a delayed old-PR closure must not close a request
+covered by an open retry PR. Added the active-reference guard and verified
+RED-to-GREEN; the complete suite now has 31 passing tests.

@@ -8,6 +8,10 @@ function isCapeRequest(title) {
   return /^Cape Request(?::|$)/.test(title) || title.startsWith('[Cape Request]:');
 }
 
+function capeUUID(branch) {
+  return /^cape-request\/capedev-([a-f0-9]{32})(?:-[1-9]\d*)?$/.exec(branch)?.[1];
+}
+
 function parseRequest(body) {
   const fields = new Map();
   const sections = (body || '').replace(/\r\n/g, '\n').split(/^### /m).slice(1);
@@ -102,7 +106,6 @@ async function run({ github, context, core, issueNumber = context.issue.number, 
     return unchanged;
   }
 
-
   function previousPRNumbers(body = '') {
     const numbers = [...body.matchAll(/<!-- cape-request-pr:(\d+) -->/g)].map(match => Number(match[1]));
     // Also recognize comments written before the hidden PR marker was introduced.
@@ -135,9 +138,9 @@ async function run({ github, context, core, issueNumber = context.issue.number, 
     const closingLine = `Closes #${issueNumber}`;
     for (const number of previousPRNumbers(previous?.body)) {
       const { data: pr } = await github.rest.pulls.get({ ...repo, pull_number: number });
-      if (pr.state !== 'open' || pr.head.ref === `cape-request/capedev-${profile.id}` ||
+      if (pr.state !== 'open' || capeUUID(pr.head.ref) === profile.id ||
           pr.head.repo?.full_name?.toLowerCase() !== `${repo.owner}/${repo.repo}`.toLowerCase() ||
-          !/^cape-request\/capedev-[a-f0-9]{32}$/.test(pr.head.ref)) continue;
+          !capeUUID(pr.head.ref)) continue;
       const lines = (pr.body || '').split(/\r?\n/);
       if (!lines.includes(closingLine)) continue;
       const body = lines.filter(line => line !== closingLine).join('\n').trim();
@@ -163,7 +166,7 @@ async function run({ github, context, core, issueNumber = context.issue.number, 
         body: [pr.body?.trim(), closingLine, `GitHub Username: @${requester}`].filter(Boolean).join('\n\n'),
       });
     }
-    await feedback(`Pull request: ${pr.html_url}. This issue will close automatically when the PR is merged.`, pr.number);
+    await feedback(`Pull request: ${pr.html_url}. This issue will close automatically when the PR is merged or closed.`, pr.number);
     try {
       await github.rest.issues.getLabel({ ...repo, name: 'Chore' });
     } catch (error) {
@@ -204,19 +207,20 @@ async function run({ github, context, core, issueNumber = context.issue.number, 
       return;
     }
 
-    // The UUID determines the branch, so separate issues and retries share one PR.
-    const branch = `cape-request/capedev-${profile.id}`;
-    const prs = await github.paginate(github.rest.pulls.list, {
-      ...repo, head: `${repo.owner}:${branch}`, base: 'master', state: 'all', per_page: 100,
+    // Reuse any open request for this UUID, including a numbered retry branch.
+    const history = await github.paginate(github.rest.pulls.list, {
+      ...repo, base: 'master', state: 'all', per_page: 100,
     });
+    const prs = history.filter(pr => capeUUID(pr.head?.ref) === profile.id &&
+      pr.head.repo?.full_name?.toLowerCase() === `${repo.owner}/${repo.repo}`.toLowerCase());
     const openPR = prs.find(pr => pr.state === 'open');
     if (openPR) {
       await preparePR(openPR);
       return;
     }
-    if (prs.length) {
-      throw new RequestError(`A previous PR for this UUID was closed: ${prs[0].html_url}. A maintainer must review that decision before another request is processed.`);
-    }
+    // A new attempt starts from today's master rather than a previously closed
+    // PR's branch. The stable attempt number also allows interrupted runs to retry.
+    const branch = `cape-request/capedev-${profile.id}${prs.length ? `-${prs.length + 1}` : ''}`;
     if (!await stillCurrent()) return;
 
     let branchRef;
@@ -276,12 +280,24 @@ async function closeRequests({ github, context }) {
   const repo = context.repo;
   if (event.action !== 'closed' || !pr || pr.merged || pr.base.ref !== 'master' ||
       pr.head.repo?.full_name?.toLowerCase() !== `${repo.owner}/${repo.repo}`.toLowerCase() ||
-      !/^cape-request\/capedev-[a-f0-9]{32}$/.test(pr.head.ref)) return;
+      !capeUUID(pr.head.ref)) return;
   // Read current state in case the PR was reopened while this event was queued.
   const { data: current } = await github.rest.pulls.get({ ...repo, pull_number: pr.number });
   if (current.state !== 'closed' || current.merged) return;
+  const openPRs = await github.paginate(github.rest.pulls.list, {
+    ...repo, base: 'master', state: 'open', per_page: 100,
+  });
+  const activeReferences = new Set();
+  for (const openPR of openPRs) {
+    if (openPR.state !== 'open' || capeUUID(openPR.head?.ref) !== capeUUID(pr.head.ref) ||
+        openPR.head.repo?.full_name?.toLowerCase() !== `${repo.owner}/${repo.repo}`.toLowerCase()) continue;
+    for (const match of (openPR.body || '').matchAll(/^Closes #([1-9]\d*)\s*$/gm)) {
+      activeReferences.add(Number(match[1]));
+    }
+  }
   const references = [...(current.body || '').matchAll(/^Closes #([1-9]\d*)\s*$/gm)];
   for (const issueNumber of new Set(references.map(match => Number(match[1])))) {
+    if (activeReferences.has(issueNumber)) continue;
     const params = { ...repo, issue_number: issueNumber };
     const { data: issue } = await github.rest.issues.get(params);
     if (issue.state === 'open' && !issue.pull_request && isCapeRequest(issue.title)) {

@@ -28,3 +28,9 @@ workflow never merges automatically and never executes code from a PR head.
 
 Publish only to the UltraProdigy fork for testing. Leave the original GTNH
 checkout untouched.
+
+Previously closed PRs do not block new requests: if no PR is open and capedev
+is absent from master, create a fresh attempt branch from current master.
+The form explicitly tells users not to edit the title. Feedback says merged
+or closed. Manual issue closure does not synchronize PR state; the user
+preferred avoiding an additional event handler for that optional behavior.

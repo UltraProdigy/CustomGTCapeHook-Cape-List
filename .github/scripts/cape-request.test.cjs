@@ -126,7 +126,8 @@ function githubFixture(content = '// header\n') {
       },
       list: async params => {
         record('list-prs', params);
-        return { data: state.pulls.filter(pr => !pr.head || pr.head.ref === params.head.split(':')[1]) };
+        return { data: state.pulls.filter(pr => (params.state === 'all' || pr.state === params.state) &&
+          (!params.head || !pr.head || pr.head.ref === params.head.split(':')[1])) };
       },
       create: async params => {
         record('pr', params);
@@ -224,20 +225,29 @@ test('a failed PR creation is recoverable without another branch or commit', asy
 
 test('an existing open PR is reused for a second request for the same UUID', async () => {
   const { state, options } = githubFixture();
-  state.pulls.push({ number: 42, state: 'open', html_url: 'https://github.com/example/capes/pull/42' });
+  state.pulls.push({ head: { ref: `cape-request/capedev-${UUID}`, repo: { full_name: 'example/capes' } }, number: 42, state: 'open', html_url: 'https://github.com/example/capes/pull/42' });
   await run(options);
   assert.equal(state.issue.state, 'open');
   assert.ok(!state.events.some(event => ['branch', 'commit', 'pr'].includes(event.type)));
-  assert.equal(state.events.find(event => event.type === 'list-prs').head, `example:cape-request/capedev-${UUID}`);
+  assert.ok(state.events.some(event => event.type === 'labels' && event.issue_number === 42));
 });
 
-test('a previously closed PR is left for a maintainer instead of being recreated', async () => {
-  const { state, options } = githubFixture();
-  state.pulls.push({ number: 42, state: 'closed', html_url: 'https://github.com/example/capes/pull/42' });
-  await run(options);
-  assert.equal(state.issue.state, 'open');
-  assert.match(state.comments[0].body, /maintainer/i);
-  assert.ok(!state.events.some(event => ['branch', 'commit', 'pr'].includes(event.type)));
+test('a closed PR does not block a fresh request branch from current master', async () => {
+  for (const merged of [false, true]) {
+    const { state, options } = githubFixture();
+    const oldBranch = 'cape-request/capedev-' + UUID;
+    state.pulls.push({ number: 42, state: 'closed', merged, head: { ref: oldBranch, repo: { full_name: 'example/capes' } }, html_url: 'https://github.com/example/capes/pull/42' });
+    state.refs[oldBranch] = 'old-sha';
+    state.files['old-sha'] = UUID + ':capedev // OldName\n';
+    await run(options);
+    assert.deepEqual(state.failed, []);
+    assert.equal(state.pulls.length, 2);
+    assert.equal(state.pulls[1].head.ref, oldBranch + '-2');
+    assert.equal(state.events.find(event => event.type === 'branch').sha, 'base-sha');
+    assert.equal(state.issue.state, 'open');
+    assert.match(state.comments[0].body, /merged or closed/);
+    assert.doesNotMatch(state.comments[0].body, /previous PR|maintainer must review/i);
+  }
 });
 
 test('unrelated issues, closed issues, and pull requests are ignored', async () => {
@@ -290,7 +300,7 @@ test('an issue edited while the PR is being created is not closed against stale 
 
 test('a reused PR gains a closing reference for the new request', async () => {
   const { state, options } = githubFixture();
-  state.pulls.push({ number: 42, state: 'open', body: 'Closes #3\n\nGitHub Username: @first-requester', html_url: 'https://github.com/example/capes/pull/42' });
+  state.pulls.push({ head: { ref: `cape-request/capedev-${UUID}`, repo: { full_name: 'example/capes' } }, number: 42, state: 'open', body: 'Closes #3\n\nGitHub Username: @first-requester', html_url: 'https://github.com/example/capes/pull/42' });
   await run(options);
   assert.match(state.pulls[0].body, /^Closes #3$/m);
   assert.match(state.pulls[0].body, /^Closes #7$/m);
@@ -353,7 +363,6 @@ test('PR closure ignores fork branches, unrelated branches, and non-cape issues'
   }
 });
 
-
 test('editing the IGN detaches the old PR even after validation feedback replaced its comment', async () => {
   const { state, options } = githubFixture();
   await run(options);
@@ -374,6 +383,34 @@ test('editing the IGN detaches the old PR even after validation feedback replace
 test('declining a PR does not close a request whose IGN has since changed', async () => {
   const { state, options } = closedPRFixture();
   state.issue.body = form({ ign: 'OtherUser' });
+  await closeRequests(options);
+  assert.equal(state.issue.state, 'open');
+});
+
+test('an open retry PR is reused after earlier PRs closed', async () => {
+  const { state, options } = githubFixture();
+  state.pulls.push({ number: 42, state: 'closed', head: { ref: 'cape-request/capedev-' + UUID, repo: { full_name: 'example/capes' } } });
+  state.pulls.push({ number: 43, state: 'open', body: 'Closes #7', html_url: 'https://github.com/example/capes/pull/43', head: { ref: 'cape-request/capedev-' + UUID + '-2', repo: { full_name: 'example/capes' } } });
+  await run(options);
+  assert.equal(state.pulls.length, 2);
+  assert.ok(!state.events.some(event => ['branch', 'commit', 'pr'].includes(event.type)));
+  assert.match(state.comments[0].body, /pull\/43/);
+});
+
+test('closing an unmerged retry PR still closes its request as not planned', async () => {
+  const { state, options } = closedPRFixture();
+  options.context.payload.pull_request.head.ref += '-2';
+  state.currentPR.head.ref += '-2';
+  await closeRequests(options);
+  assert.equal(state.issue.state_reason, 'not_planned');
+});
+
+test('a delayed old PR closure does not close an issue with a new retry PR', async () => {
+  const { state, options } = closedPRFixture();
+  state.pulls.push(state.currentPR);
+  await run(options);
+  assert.equal(state.pulls.length, 2);
+  assert.equal(state.pulls[1].state, 'open');
   await closeRequests(options);
   assert.equal(state.issue.state, 'open');
 });

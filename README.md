@@ -24,12 +24,13 @@ name and 32-character UUID without dashes; no UUID input or lookup site is neede
   Username, and GTNH Roles.
 - The issue stays open during review. The PR includes `Closes #ISSUE_NUMBER`, so
   merging it closes the issue automatically. Closing the PR without merging
-  closes linked cape requests as **not planned**.
+  closes linked cape requests as **not planned**. Manually closing an issue
+  leaves its PR open for a maintainer to handle.
 - Entries for other cape types are preserved and do not prevent a capedev request.
 - Requests for a UUID with an open automation PR reuse that PR and add another
-  closing reference. A previously closed PR requires a maintainer's decision
-  before another request proceeds. Changing the IGN detaches the old PR; a
-  superseded PR closes if no other requests still depend on it.
+  closing reference. If no PR is open and capedev is absent from master, a new
+  PR is opened even if an earlier one was closed. Changing the IGN detaches the
+  old PR; a superseded PR closes if no other requests still depend on it.
 - Invalid input or service failures leave the issue open with feedback. Edit the
   issue to correct it or retry. Reopening also retries; maintainers can run
   **Actions → Cape request → Run workflow** with the issue number. GitHub's

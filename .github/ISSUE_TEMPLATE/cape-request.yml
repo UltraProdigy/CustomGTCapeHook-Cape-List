@@ -4,7 +4,9 @@ title: "Cape Request"
 body:
   - type: markdown
     attributes:
-      value: A pull request will be prepared for maintainer review before the cape is granted.
+      value: |
+        A pull request will be prepared for maintainer review before the cape is granted.
+        You do not need to edit the title; it will be set automatically from your Minecraft IGN.
   - type: input
     id: discord
     attributes:
