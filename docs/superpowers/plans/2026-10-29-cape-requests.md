@@ -65,3 +65,18 @@ The script validates Mojang profiles and uses the GitHub API for one-file PRs.
 
 The user authorized cloning into UPD-Repositories and committing and pushing to
 the UltraProdigy fork. The original GTNH checkout remains untouched.
+
+## Requested revisions
+
+- Simplify to Discord Username, Minecraft IGN, and developer-only GTNH Roles.
+- Resolve UUID only from Mojang and generate an IGN-based issue title.
+- Include the issue author, label Chore, and use Closes references.
+- Add a trusted close-event handler for declining requests as not planned.
+- Verify regressions and workflows, then commit and push only to the UltraProdigy fork.
+
+Revision verification: 28 tests pass, including label retries, declined PRs,
+changed IGNs, and preserved PR metadata through validation failures. Shared PR
+updates use the documented GitHub concurrency queue (queue: max), which the
+current actionlint release does not yet recognize; all other workflow lint
+checks pass with only that known schema warning excluded. The form parses
+with js-yaml. Original cape data and CODEOWNERS remain unchanged.

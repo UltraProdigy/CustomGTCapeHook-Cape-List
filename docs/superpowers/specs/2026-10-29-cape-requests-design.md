@@ -1,24 +1,30 @@
 # Cape requests
 
-Provide a GitHub issue form with optional Discord username, required Minecraft IGN,
-optional UUID linked to https://mcuuid.net/, and a required multiple-selection dropdown
-for GTNH Developer, GTNH Contributor, GTNH Texture Creator, and GTNH Sound Designer.
-All four roles currently request `capedev`.
+Provide a GitHub issue form with optional Discord Username, required Minecraft
+IGN, and a GTNH Roles dropdown containing only GTNH Developer. Use DreamMasterXXL
+and boubou19 as the Discord and Minecraft examples. The introduction contains
+only the PR-review sentence; a note beneath the dropdown says capes for other
+contributors are coming soon.
 
-Resolve the IGN through Mojang, verify any supplied UUID, and write the lowercase
-32-character UUID. Insert `UUID:capedev // IGN` alphabetically by IGN into the
-existing capedev group, preserving other entries. Only an existing capedev entry
-counts as a duplicate; other cape groups may contain the same UUID.
+Prefill the issue title as Cape Request, then rename it to Cape Request: IGN
+using Mojang's canonical account name. GitHub displays the title field but users
+do not need to edit it. Obtain the lowercase, 32-character UUID solely through
+Mojang; do not ask users for a UUID.
 
-Create a reviewable PR against master, then close the request as completed. Close
-existing-capedev requests as not planned. Invalid inputs and service failures leave
-the issue open with actionable feedback. Edits, reopening, and a manual dispatch
-allow retries; repeated processing reuses the same request branch and PR.
+Insert UUID:capedev // IGN alphabetically into the existing capedev group,
+preserving other cape types. An existing capedev UUID closes the request as not
+planned; other cape types do not prevent a request.
 
-Use a native GitHub Actions workflow and dependency-free JavaScript through
-github-script. Required UUID input was considered, but automatic lookup reduces
-mistakes and effort. An external bot was considered, but adds hosting and credentials.
-Existing CODEOWNERS remains responsible for review. Never merge automatically.
+Create a PR against master with Closes #ISSUE_NUMBER, the issue author's GitHub
+username, IGN, UUID, optional Discord Username, and GTNH Roles. Add Chore, creating
+the label if needed. Keep the issue open until merge. A small trusted PR-close
+handler closes linked requests as not planned when a same-repository automation
+PR closes unmerged. Reused PRs gain closing references for each request.
 
-The original GTNH checkout stays untouched. The user subsequently authorized cloning,
-committing, and pushing this implementation to the UltraProdigy fork for testing.
+Invalid inputs and service failures leave requests open with feedback. Edits,
+reopening, and manual dispatch support retries. Use GitHub Actions with a
+JavaScript script and local tests; existing CODEOWNERS handles review. The
+workflow never merges automatically and never executes code from a PR head.
+
+Publish only to the UltraProdigy fork for testing. Leave the original GTNH
+checkout untouched.

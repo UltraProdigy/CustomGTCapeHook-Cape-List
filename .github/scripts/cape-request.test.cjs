@@ -1,28 +1,21 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { parseRequest, resolveProfile, addCape, run } = require('./cape-request.cjs');
+const { parseRequest, resolveProfile, addCape, run, closeRequests } = require('./cape-request.cjs');
 
 const UUID = '069a79f444e94726a5befca90e38aaf5';
 const profile = { id: UUID, name: 'Notch' };
-const form = ({ ign = 'notch', uuid = '_No response_', discord = '_No response_',
-  roles = 'GTNH Developer, GTNH Texture Creator' } = {}) =>
-  `### Discord username\n\n${discord}\n\n### Minecraft IGN\n\n${ign}\n\n` +
-  `### Minecraft UUID\n\n${uuid}\n\n### GTNH roles\n\n${roles}`;
+const form = ({ ign = 'notch', discord = '_No response_', roles = 'GTNH Developer' } = {}) =>
+  `### Discord Username\n\n${discord}\n\n### Minecraft IGN\n\n${ign}\n\n### GTNH Roles\n\n${roles}`;
 const response = (status, body) => ({ status, ok: status === 200, json: async () => body });
 
-test('parses multiple roles and permits an omitted UUID and Discord username', () => {
-  assert.deepEqual(parseRequest(form()), {
-    ign: 'notch', uuid: '', discord: '', roles: ['GTNH Developer', 'GTNH Texture Creator'],
-  });
-});
-
-test('normalizes a supplied dashed uppercase UUID', () => {
-  assert.equal(parseRequest(form({ uuid: '069A79F4-44E9-4726-A5BE-FCA90E38AAF5' })).uuid, UUID);
+test('parses the developer-only form without a UUID field', () => {
+  assert.deepEqual(parseRequest(form()), { ign: 'notch', discord: '', roles: ['GTNH Developer'] });
+  assert.throws(() => parseRequest(form({ roles: 'GTNH Contributor' })));
+  assert.throws(() => parseRequest(form() + '\n\n### Minecraft UUID\n\n' + UUID));
 });
 
 test('rejects malformed inputs rather than building a cape entry from them', () => {
   for (const input of [form({ ign: 'name // injected' }), form({ ign: '$(whoami)' }),
-    form({ uuid: '069a-79f444e94726a5befca90e38aaf5' }),
     form({ roles: '_No response_' }), form({ roles: 'GTNH Admin' }),
     form() + '\n\n### Minecraft IGN\n\nSomeoneElse',
     form({ discord: 'one\ntwo' }), 'unstructured issue']) {
@@ -37,13 +30,6 @@ test('resolves a profile from the IGN and uses Mojang casing and trimmed UUID', 
     return response(200, profile);
   });
   assert.deepEqual(result, profile);
-});
-
-test('accepts a matching supplied UUID and rejects a mismatch', async () => {
-  assert.deepEqual(await resolveProfile(parseRequest(form({ uuid: UUID })),
-    async () => response(200, profile)), profile);
-  await assert.rejects(resolveProfile(parseRequest(form({ uuid: '1'.repeat(32) })),
-    async () => response(200, profile)), /does not match/i);
 });
 
 test('failed or malformed profile lookups cannot produce a cape entry', async () => {
@@ -84,9 +70,9 @@ test('refuses an ambiguous capedev layout instead of overwriting other groups', 
 
 function githubFixture(content = '// header\n') {
   const state = {
-    issue: { number: 7, title: '[Cape Request]: Notch', body: form(), state: 'open' },
+    issue: { number: 7, title: 'Cape Request', body: form(), state: 'open', user: { login: 'request-author' } },
     refs: { master: 'base-sha' }, files: { 'base-sha': content }, pulls: [], comments: [],
-    events: [], failed: [],
+    events: [], failed: [], labels: [],
   };
   const record = (type, params) => state.events.push({ type, ...params });
   const notFound = () => Object.assign(new Error('Not Found'), { status: 404 });
@@ -99,7 +85,17 @@ function githubFixture(content = '// header\n') {
         state.comments.push({ id: 1, body: params.body, user: { type: 'Bot' } });
       },
       updateComment: async params => { record('comment-update', params); state.comments[0].body = params.body; },
-      update: async params => { record('close', params); Object.assign(state.issue, params); },
+      update: async params => {
+        record(params.state === 'closed' ? 'close' : 'title', params);
+        Object.assign(state.issue, params);
+        return { data: structuredClone(state.issue) };
+      },
+      getLabel: async () => {
+        if (!state.labels.includes('Chore')) throw notFound();
+        return { data: { name: 'Chore' } };
+      },
+      createLabel: async params => { record('create-label', params); state.labels.push(params.name); },
+      addLabels: async params => { record('labels', params); if (state.failLabel) throw new Error('Label unavailable'); },
     },
     git: {
       getRef: async ({ ref }) => {
@@ -123,11 +119,19 @@ function githubFixture(content = '// header\n') {
       },
     },
     pulls: {
-      list: async params => { record('list-prs', params); return { data: state.pulls }; },
+      get: async params => ({ data: state.currentPR || state.pulls.find(pr => pr.number === params.pull_number) }),
+      update: async params => {
+        record('update-pr', params);
+        Object.assign(state.pulls.find(pr => pr.number === params.pull_number), params);
+      },
+      list: async params => {
+        record('list-prs', params);
+        return { data: state.pulls.filter(pr => !pr.head || pr.head.ref === params.head.split(':')[1]) };
+      },
       create: async params => {
         record('pr', params);
         if (state.failPR) throw new Error('GitHub unavailable');
-        const pr = { number: 42, state: 'open', html_url: 'https://github.com/example/capes/pull/42' };
+        const pr = { body: params.body, head: { ref: params.head, repo: { full_name: 'example/capes' } }, number: 42 + state.pulls.length, state: 'open', html_url: 'https://github.com/example/capes/pull/42' };
         state.pulls.push(pr);
         state.onPR?.();
         return { data: pr };
@@ -145,9 +149,9 @@ function githubFixture(content = '// header\n') {
   };
 }
 
-test('opens a one-file PR to master before closing the issue as completed', async () => {
+test('opens a labeled one-file PR that closes the issue on merge', async () => {
   const { state, options } = githubFixture();
-  state.issue.body = form({ discord: 'discord_user', roles: 'GTNH Contributor, GTNH Sound Designer' });
+  state.issue.body = form({ discord: 'DreamMasterXXL' });
   await run(options);
   const commit = state.events.find(event => event.type === 'commit');
   assert.equal(commit.path, 'capesUUID.txt');
@@ -156,11 +160,16 @@ test('opens a one-file PR to master before closing the issue as completed', asyn
   const pr = state.events.find(event => event.type === 'pr');
   assert.equal(pr.base, 'master');
   assert.equal(pr.head, `cape-request/capedev-${UUID}`);
-  assert.match(pr.body, /discord_user/);
-  assert.match(pr.body, /GTNH Contributor, GTNH Sound Designer/);
+  assert.match(pr.body, /Discord Username: `DreamMasterXXL`/);
+  assert.match(pr.body, /GTNH Roles: GTNH Developer/);
+  assert.match(pr.body, /GitHub Username: @request-author/);
+  assert.match(pr.body, /^Closes #7$/m);
+  assert.doesNotMatch(pr.body, /self-reported|Adds a capedev/);
   assert.match(pr.body, /#7/);
-  assert.equal(state.issue.state_reason, 'completed');
-  assert.ok(state.events.findIndex(event => event.type === 'pr') < state.events.findIndex(event => event.type === 'close'));
+  assert.equal(state.issue.state, 'open');
+  assert.ok(!state.events.some(event => event.type === 'close'));
+  assert.equal(state.issue.title, 'Cape Request: Notch');
+  assert.deepEqual(state.events.find(event => event.type === 'labels').labels, ['Chore']);
   assert.match(state.comments[0].body, /pull\/42/);
   assert.deepEqual(state.failed, []);
 });
@@ -175,7 +184,7 @@ test('closes an existing capedev request as not planned without opening a PR', a
 test('another cape for the UUID still permits a capedev PR', async () => {
   const { state, options } = githubFixture(`${UUID}:capedonor // Notch\n`);
   await run(options);
-  assert.equal(state.issue.state_reason, 'completed');
+  assert.equal(state.issue.state, 'open');
   assert.equal(state.files['new-sha'], `${UUID}:capedonor // Notch\n${UUID}:capedev // Notch\n`);
 });
 
@@ -206,7 +215,7 @@ test('a failed PR creation is recoverable without another branch or commit', asy
   assert.equal(state.failed.length, 1);
   state.failPR = false;
   await run(options);
-  assert.equal(state.issue.state_reason, 'completed');
+  assert.equal(state.issue.state, 'open');
   assert.equal(state.events.filter(event => event.type === 'branch').length, 1);
   assert.equal(state.events.filter(event => event.type === 'commit').length, 1);
   assert.equal(state.comments.length, 1);
@@ -217,7 +226,7 @@ test('an existing open PR is reused for a second request for the same UUID', asy
   const { state, options } = githubFixture();
   state.pulls.push({ number: 42, state: 'open', html_url: 'https://github.com/example/capes/pull/42' });
   await run(options);
-  assert.equal(state.issue.state_reason, 'completed');
+  assert.equal(state.issue.state, 'open');
   assert.ok(!state.events.some(event => ['branch', 'commit', 'pr'].includes(event.type)));
   assert.equal(state.events.find(event => event.type === 'list-prs').head, `example:cape-request/capedev-${UUID}`);
 });
@@ -254,7 +263,7 @@ test('an uncommitted branch is recovered even if master has advanced', async () 
   state.refs.master = 'advanced-sha';
   state.files['advanced-sha'] = `// header\n${'a'.repeat(32)}:capedonor // Alice\n`;
   await run(options);
-  assert.equal(state.issue.state_reason, 'completed');
+  assert.equal(state.issue.state, 'open');
   assert.equal(state.files['new-sha'], `// header\n${UUID}:capedev // Notch\n`);
   assert.ok(!state.events.some(event => event.type === 'branch'));
 });
@@ -277,4 +286,94 @@ test('an issue edited while the PR is being created is not closed against stale 
   assert.equal(state.pulls.length, 1);
   assert.equal(state.issue.state, 'open');
   assert.ok(!state.events.some(event => event.type === 'close'));
+});
+
+test('a reused PR gains a closing reference for the new request', async () => {
+  const { state, options } = githubFixture();
+  state.pulls.push({ number: 42, state: 'open', body: 'Closes #3\n\nGitHub Username: @first-requester', html_url: 'https://github.com/example/capes/pull/42' });
+  await run(options);
+  assert.match(state.pulls[0].body, /^Closes #3$/m);
+  assert.match(state.pulls[0].body, /^Closes #7$/m);
+  assert.match(state.pulls[0].body, /@request-author/);
+  assert.equal(state.issue.state, 'open');
+});
+
+test('label failure leaves the issue open and can be retried on the same PR', async () => {
+  const { state, options } = githubFixture();
+  state.failLabel = true;
+  await run(options);
+  assert.equal(state.issue.state, 'open');
+  assert.equal(state.failed.length, 1);
+  state.failLabel = false;
+  await run(options);
+  assert.equal(state.pulls.length, 1);
+  assert.equal(state.events.filter(event => event.type === 'create-label').length, 1);
+  assert.ok(state.events.filter(event => event.type === 'labels').length >= 2);
+});
+
+function closedPRFixture() {
+  const fixture = githubFixture();
+  const pr = {
+    number: 42, state: 'closed', merged: false, body: 'Closes #7\n\nMinecraft IGN: `Notch`',
+    base: { ref: 'master' },
+    head: { ref: 'cape-request/capedev-' + UUID, repo: { full_name: 'example/capes' } },
+  };
+  fixture.state.issue.title = 'Cape Request: Notch';
+  fixture.state.currentPR = pr;
+  fixture.options.context.payload = { action: 'closed', pull_request: structuredClone(pr) };
+  return fixture;
+}
+
+test('closing an unmerged automation PR closes its linked cape request as not planned', async () => {
+  const { state, options } = closedPRFixture();
+  await closeRequests(options);
+  assert.equal(state.issue.state, 'closed');
+  assert.equal(state.issue.state_reason, 'not_planned');
+});
+
+test('merged or reopened PRs do not mark requests as not planned', async () => {
+  for (const change of [{ merged: true }, { state: 'open' }]) {
+    const { state, options } = closedPRFixture();
+    Object.assign(state.currentPR, change);
+    await closeRequests(options);
+    assert.equal(state.issue.state, 'open');
+  }
+});
+
+test('PR closure ignores fork branches, unrelated branches, and non-cape issues', async () => {
+  for (const mutate of [
+    f => { f.options.context.payload.pull_request.head.repo.full_name = 'someone/fork'; },
+    f => { f.options.context.payload.pull_request.head.ref = 'unrelated'; },
+    f => { f.state.issue.title = 'Bug report'; },
+  ]) {
+    const f = closedPRFixture();
+    mutate(f);
+    await closeRequests(f.options);
+    assert.equal(f.state.issue.state, 'open');
+  }
+});
+
+
+test('editing the IGN detaches the old PR even after validation feedback replaced its comment', async () => {
+  const { state, options } = githubFixture();
+  await run(options);
+  const oldPR = state.pulls[0];
+  state.issue.body = form({ ign: 'invalid name' });
+  await run(options);
+  state.issue.body = form({ ign: 'OtherUser' });
+  options.fetch = async () => response(200, { id: 'd'.repeat(32), name: 'OtherUser' });
+  await run(options);
+  assert.equal(oldPR.state, 'closed');
+  assert.doesNotMatch(oldPR.body, /^Closes #7$/m);
+  assert.equal(state.pulls.length, 2);
+  assert.match(state.pulls[1].body, /^Closes #7$/m);
+  assert.equal(state.issue.state, 'open');
+  assert.equal(state.issue.title, 'Cape Request: OtherUser');
+});
+
+test('declining a PR does not close a request whose IGN has since changed', async () => {
+  const { state, options } = closedPRFixture();
+  state.issue.body = form({ ign: 'OtherUser' });
+  await closeRequests(options);
+  assert.equal(state.issue.state, 'open');
 });

@@ -1,8 +1,12 @@
-const ROLES = ['GTNH Developer', 'GTNH Contributor', 'GTNH Texture Creator', 'GTNH Sound Designer'];
+const ROLES = ['GTNH Developer'];
 const UUID_PATTERN = /^(?:[a-f0-9]{32}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/i;
 const IGN_PATTERN = /^[a-z0-9_]{1,16}$/i;
 
 class RequestError extends Error {}
+
+function isCapeRequest(title) {
+  return /^Cape Request(?::|$)/.test(title) || title.startsWith('[Cape Request]:');
+}
 
 function parseRequest(body) {
   const fields = new Map();
@@ -14,19 +18,17 @@ function parseRequest(body) {
     const value = section.slice(newline + 1).trim();
     fields.set(heading, value === '_No response_' ? '' : value);
   }
-  const headings = ['Discord username', 'Minecraft IGN', 'Minecraft UUID', 'GTNH roles'];
+  const headings = ['Discord Username', 'Minecraft IGN', 'GTNH Roles'];
   if (fields.size !== headings.length || headings.some(heading => !fields.has(heading))) {
-    throw new RequestError('Please use the cape request form and keep its four field headings intact.');
+    throw new RequestError('Please use the cape request form and keep its three field headings intact.');
   }
   const ign = fields.get('Minecraft IGN');
-  const uuid = fields.get('Minecraft UUID');
-  const discord = fields.get('Discord username');
-  const roles = fields.get('GTNH roles').split(',').map(role => role.trim());
+  const discord = fields.get('Discord Username');
+  const roles = fields.get('GTNH Roles').split(',').map(role => role.trim());
   if (!IGN_PATTERN.test(ign)) throw new RequestError('Minecraft IGN must contain 1–16 letters, numbers, or underscores.');
-  if (uuid && !UUID_PATTERN.test(uuid)) throw new RequestError('Minecraft UUID must be 32 hexadecimal characters, optionally with standard UUID dashes. Check https://mcuuid.net/ or leave it blank for automatic lookup.');
-  if (discord.length > 100 || /[\x00-\x1f\x7f`]/.test(discord)) throw new RequestError('Discord username must be a single line of at most 100 characters without backticks.');
-  if (roles.some(role => !ROLES.includes(role))) throw new RequestError('Select at least one of the four GTNH roles from the form.');
-  return { ign, uuid: uuid.replace(/-/g, '').toLowerCase(), discord, roles: [...new Set(roles)] };
+  if (discord.length > 100 || /[\x00-\x1f\x7f`]/.test(discord)) throw new RequestError('Discord Username must be a single line of at most 100 characters without backticks.');
+  if (roles.some(role => !ROLES.includes(role))) throw new RequestError('Select GTNH Developer from the role dropdown.');
+  return { ign, discord, roles: [...new Set(roles)] };
 }
 
 async function resolveProfile(request, fetchProfile = globalThis.fetch) {
@@ -43,9 +45,6 @@ async function resolveProfile(request, fetchProfile = globalThis.fetch) {
     throw new Error('Mojang returned an invalid profile. Try again later.');
   }
   profile.id = profile.id.toLowerCase();
-  if (request.uuid && request.uuid !== profile.id) {
-    throw new RequestError('The supplied Minecraft UUID does not match that IGN. Correct the IGN or UUID, or leave UUID blank for automatic lookup.');
-  }
   return { id: profile.id, name: profile.name };
 }
 
@@ -93,6 +92,7 @@ async function run({ github, context, core, issueNumber = context.issue.number, 
   const path = 'capesUUID.txt';
   const marker = '<!-- cape-request-automation -->';
   let snapshot;
+  let requester;
 
   async function stillCurrent() {
     const { data: current } = await github.rest.issues.get(issueParams);
@@ -102,14 +102,50 @@ async function run({ github, context, core, issueNumber = context.issue.number, 
     return unchanged;
   }
 
-  async function feedback(message) {
-    const body = `${marker}\n${message}`;
+
+  function previousPRNumbers(body = '') {
+    const numbers = [...body.matchAll(/<!-- cape-request-pr:(\d+) -->/g)].map(match => Number(match[1]));
+    // Also recognize comments written before the hidden PR marker was introduced.
+    for (const match of body.matchAll(/https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)/g)) {
+      if (`${match[1]}/${match[2]}`.toLowerCase() === `${repo.owner}/${repo.repo}`.toLowerCase()) numbers.push(Number(match[3]));
+    }
+    return [...new Set(numbers)];
+  }
+
+  async function previousFeedback() {
     const comments = await github.paginate(github.rest.issues.listComments, { ...issueParams, per_page: 100 });
-    const previous = comments.find(comment => comment.user?.type === 'Bot' && comment.body?.startsWith(marker));
+    return comments.find(comment => comment.user?.type === 'Bot' && comment.body?.startsWith(marker));
+  }
+
+  async function feedback(message, prNumber) {
+    const previous = await previousFeedback();
+    const numbers = new Set(previousPRNumbers(previous?.body));
+    if (prNumber) numbers.add(prNumber);
+    const metadata = [...numbers].map(number => `<!-- cape-request-pr:${number} -->`);
+    const body = [marker, message, ...metadata].join('\n');
     if (previous) {
       if (previous.body !== body) await github.rest.issues.updateComment({ ...repo, comment_id: previous.id, body });
     } else {
       await github.rest.issues.createComment({ ...issueParams, body });
+    }
+  }
+
+  async function detachPreviousPRs(profile) {
+    const previous = await previousFeedback();
+    const closingLine = `Closes #${issueNumber}`;
+    for (const number of previousPRNumbers(previous?.body)) {
+      const { data: pr } = await github.rest.pulls.get({ ...repo, pull_number: number });
+      if (pr.state !== 'open' || pr.head.ref === `cape-request/capedev-${profile.id}` ||
+          pr.head.repo?.full_name?.toLowerCase() !== `${repo.owner}/${repo.repo}`.toLowerCase() ||
+          !/^cape-request\/capedev-[a-f0-9]{32}$/.test(pr.head.ref)) continue;
+      const lines = (pr.body || '').split(/\r?\n/);
+      if (!lines.includes(closingLine)) continue;
+      const body = lines.filter(line => line !== closingLine).join('\n').trim();
+      // A shared PR stays open for its remaining requests; a superseded one closes.
+      await github.rest.pulls.update({
+        ...repo, pull_number: number, body,
+        ...(!/^Closes #\d+$/m.test(body) ? { state: 'closed' } : {}),
+      });
     }
   }
 
@@ -119,20 +155,43 @@ async function run({ github, context, core, issueNumber = context.issue.number, 
     return { sha: data.sha, content: Buffer.from(data.content, 'base64').toString('utf8') };
   }
 
-  async function complete(pr) {
-    if (!await stillCurrent()) return;
-    await feedback(`This cape request is covered by ${pr.html_url}. Closing as completed because the PR is ready for maintainer review; the cape becomes available after it is merged.`);
-    if (await stillCurrent()) {
-      await github.rest.issues.update({ ...issueParams, state: 'closed', state_reason: 'completed' });
+  async function preparePR(pr) {
+    const closingLine = `Closes #${issueNumber}`;
+    if (!(pr.body || '').split(/\r?\n/).includes(closingLine)) {
+      await github.rest.pulls.update({
+        ...repo, pull_number: pr.number,
+        body: [pr.body?.trim(), closingLine, `GitHub Username: @${requester}`].filter(Boolean).join('\n\n'),
+      });
     }
+    await feedback(`Pull request: ${pr.html_url}. This issue will close automatically when the PR is merged.`, pr.number);
+    try {
+      await github.rest.issues.getLabel({ ...repo, name: 'Chore' });
+    } catch (error) {
+      if (error.status !== 404) throw error;
+      try {
+        await github.rest.issues.createLabel({ ...repo, name: 'Chore', color: 'ededed' });
+      } catch (creationError) {
+        if (creationError.status !== 422) throw creationError;
+      }
+    }
+    await github.rest.issues.addLabels({ ...repo, issue_number: pr.number, labels: ['Chore'] });
   }
 
   try {
     const { data: issue } = await github.rest.issues.get(issueParams);
-    if (issue.pull_request || issue.state !== 'open' || !issue.title.startsWith('[Cape Request]:')) return;
+    if (issue.pull_request || issue.state !== 'open' || !isCapeRequest(issue.title)) return;
     snapshot = { title: issue.title, body: issue.body };
     const request = parseRequest(issue.body);
+    requester = issue.user.login;
     const profile = await resolveProfile(request, fetch);
+    if (!await stillCurrent()) return;
+    const title = `Cape Request: ${profile.name}`;
+    if (snapshot.title !== title) {
+      await github.rest.issues.update({ ...issueParams, title });
+      snapshot.title = title;
+    }
+    if (!await stillCurrent()) return;
+    await detachPreviousPRs(profile);
     const { data: master } = await github.rest.git.getRef({ ...repo, ref: 'heads/master' });
     const file = await readFile(master.object.sha);
     const updated = addCape(file.content, profile);
@@ -152,7 +211,7 @@ async function run({ github, context, core, issueNumber = context.issue.number, 
     });
     const openPR = prs.find(pr => pr.state === 'open');
     if (openPR) {
-      await complete(openPR);
+      await preparePR(openPR);
       return;
     }
     if (prs.length) {
@@ -188,17 +247,16 @@ async function run({ github, context, core, issueNumber = context.issue.number, 
       ...repo, base: 'master', head: branch,
       title: `Add developer cape for ${profile.name}`,
       body: [
-        `Requested through #${issueNumber}.`,
+        `Closes #${issueNumber}`,
         '',
+        `GitHub Username: @${requester}`,
         `Minecraft IGN: \`${profile.name}\``,
         `Minecraft UUID: \`${profile.id}\``,
-        `Discord username: ${request.discord ? `\`${request.discord}\`` : 'Not provided'}`,
-        `GTNH roles: ${request.roles.join(', ')}`,
-        '',
-        'Adds a capedev entry in alphabetical order. Roles are self-reported; maintainers should verify eligibility during CODEOWNERS review.',
+        `Discord Username: ${request.discord ? `\`${request.discord}\`` : 'Not provided'}`,
+        `GTNH Roles: ${request.roles.join(', ')}`,
       ].join('\n'),
     });
-    await complete(pr);
+    await preparePR(pr);
   } catch (error) {
     const expected = error instanceof RequestError;
     if (!expected) core.error(error.message);
@@ -212,4 +270,30 @@ async function run({ github, context, core, issueNumber = context.issue.number, 
   }
 }
 
-module.exports = { parseRequest, resolveProfile, addCape, run };
+async function closeRequests({ github, context }) {
+  const event = context.payload;
+  const pr = event.pull_request;
+  const repo = context.repo;
+  if (event.action !== 'closed' || !pr || pr.merged || pr.base.ref !== 'master' ||
+      pr.head.repo?.full_name?.toLowerCase() !== `${repo.owner}/${repo.repo}`.toLowerCase() ||
+      !/^cape-request\/capedev-[a-f0-9]{32}$/.test(pr.head.ref)) return;
+  // Read current state in case the PR was reopened while this event was queued.
+  const { data: current } = await github.rest.pulls.get({ ...repo, pull_number: pr.number });
+  if (current.state !== 'closed' || current.merged) return;
+  const references = [...(current.body || '').matchAll(/^Closes #([1-9]\d*)\s*$/gm)];
+  for (const issueNumber of new Set(references.map(match => Number(match[1])))) {
+    const params = { ...repo, issue_number: issueNumber };
+    const { data: issue } = await github.rest.issues.get(params);
+    if (issue.state === 'open' && !issue.pull_request && isCapeRequest(issue.title)) {
+      const name = current.body.match(/^Minecraft IGN: `([a-z0-9_]+)`$/im)?.[1];
+      try {
+        if (!name || parseRequest(issue.body).ign.toLowerCase() !== name.toLowerCase()) continue;
+      } catch {
+        continue;
+      }
+      await github.rest.issues.update({ ...params, state: 'closed', state_reason: 'not_planned' });
+    }
+  }
+}
+
+module.exports = { parseRequest, resolveProfile, addCape, run, closeRequests };
