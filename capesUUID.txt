@@ -927,6 +927,7 @@ d7c74abba09748859a97b34f1fe59143:capedev // miozune
 f2e1f6c2ef9042bfb96b7513e244bc12:capedev // nspolar
 928789bb9c8d42d2ac04642bf7912bab:capedev // Pavo_IndusSC
 d6d91c27b62b451db85cf2601b7fe059:capedev // Perihelion_Sol
+3c33d62b0a2748faad67d580d9fb2e6d:capedev // Pope__Sloth
 a052ca195c8c461694a445e737b48005:capedev // Ranzu
 9f9b40b0629a4c4eae6a6447a8b92b08:capedev // ReignOfFROZE
 d5c86da4535444499d5f2151b88bc12f:capedev // Ruling_0
