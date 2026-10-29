@@ -1,0 +1,47 @@
+name: Request a GTNH developer cape
+description: Request a cape for your GTNH development or contributions.
+title: "[Cape Request]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Request a cape for your Minecraft Java Edition account.
+        All roles below currently receive the same developer cape (`capedev`).
+        A pull request will be prepared for maintainer review before the cape is granted.
+  - type: input
+    id: discord
+    attributes:
+      label: Discord username
+      description: Your Discord username, if you have one.
+      placeholder: username
+    validations:
+      required: false
+  - type: input
+    id: minecraft-ign
+    attributes:
+      label: Minecraft IGN
+      description: Your current Minecraft Java Edition in-game name. We will use it to look up your UUID automatically.
+      placeholder: MinecraftUsername
+    validations:
+      required: true
+  - type: input
+    id: minecraft-uuid
+    attributes:
+      label: Minecraft UUID
+      description: Leave blank for automatic lookup, or find your trimmed UUID at [MCUUID](https://mcuuid.net/). If supplied, it must match your IGN. Dashes are accepted and removed automatically.
+      placeholder: 32-character UUID without dashes (optional)
+    validations:
+      required: false
+  - type: dropdown
+    id: gtnh-roles
+    attributes:
+      label: GTNH roles
+      description: Select every role that applies to you.
+      multiple: true
+      options:
+        - GTNH Developer
+        - GTNH Contributor
+        - GTNH Texture Creator
+        - GTNH Sound Designer
+    validations:
+      required: true
