@@ -75,7 +75,6 @@ async function run({ github, context, core, fetch = globalThis.fetch }) {
   const repo = context.repo;
   const issueParams = { ...repo, issue_number: issueNumber };
   const path = 'capesUUID.txt';
-  const marker = '<!-- cape-request-automation -->';
   let snapshot;
 
   async function stillCurrent() {
@@ -86,15 +85,8 @@ async function run({ github, context, core, fetch = globalThis.fetch }) {
     return unchanged;
   }
 
-  async function feedback(message) {
-    const comments = await github.paginate(github.rest.issues.listComments, { ...issueParams, per_page: 100 });
-    const previous = comments.find(comment => comment.user?.type === 'Bot' && comment.body?.startsWith(marker));
-    const body = `${marker}\n${message}`;
-    if (previous) {
-      if (previous.body !== body) await github.rest.issues.updateComment({ ...repo, comment_id: previous.id, body });
-    } else {
-      await github.rest.issues.createComment({ ...issueParams, body });
-    }
+  async function feedback(body) {
+    await github.rest.issues.createComment({ ...issueParams, body });
   }
 
   async function readFile(ref) {
@@ -128,7 +120,7 @@ async function run({ github, context, core, fetch = globalThis.fetch }) {
       return;
     }
 
-    const branch = `cape-request/capedev-${profile.id}-${context.runId}`;
+    const branch = `cape-request/capedev-${profile.name}-${issueNumber}`;
     if (!await stillCurrent()) return;
 
     let branchSha;

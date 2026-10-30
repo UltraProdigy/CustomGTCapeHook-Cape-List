@@ -163,7 +163,9 @@ test('opens a labeled one-file PR that closes the issue on merge', async () => {
   assert.equal(Buffer.from(commit.content, 'base64').toString(), `// header\n${UUID}:capedev // Notch\n`);
   const pr = state.events.find(event => event.type === 'pr');
   assert.equal(pr.base, 'master');
-  assert.equal(pr.head, `cape-request/capedev-${UUID}-123456`);
+  assert.equal(pr.head, 'cape-request/capedev-Notch-7');
+  assert.equal(commit.message, 'Add capedev for Notch');
+  assert.ok(state.comments.every(comment => !comment.body.includes('<!--')));
   assert.match(pr.body, /Discord Username: `DreamMasterXXL`/);
   assert.match(pr.body, /GTNH Roles: GTNH Developer/);
   assert.match(pr.body, /GitHub Username: @request-author/);
@@ -224,8 +226,9 @@ test('a failed PR creation is recoverable without another branch or commit', asy
   assert.equal(state.issue.state, 'open');
   assert.equal(state.events.filter(event => event.type === 'branch').length, 1);
   assert.equal(state.events.filter(event => event.type === 'commit').length, 1);
-  assert.equal(state.comments.length, 1);
-  assert.match(state.comments[0].body, /pull\/42/);
+  assert.equal(state.comments.length, 2);
+  assert.match(state.comments.at(-1).body, /pull\/42/);
+  assert.ok(state.comments.every(comment => !comment.body.includes('<!--')));
 });
 
 test('a closed PR does not block a fresh request branch from current master', async () => {
@@ -238,7 +241,7 @@ test('a closed PR does not block a fresh request branch from current master', as
     await run(options);
     assert.deepEqual(state.failed, []);
     assert.equal(state.pulls.length, 2);
-    assert.equal(state.pulls[1].head.ref, oldBranch + '-123456');
+    assert.equal(state.pulls[1].head.ref, 'cape-request/capedev-Notch-7');
     assert.equal(state.events.find(event => event.type === 'branch').sha, 'base-sha');
     assert.equal(state.issue.state, 'open');
     assert.match(state.comments[0].body, /when the PR is merged\./);
@@ -258,7 +261,7 @@ test('unrelated issues, closed issues, and pull requests are ignored', async () 
 
 test('an uncommitted branch is recovered even if master has advanced', async () => {
   const { state, options } = githubFixture();
-  state.refs[`cape-request/capedev-${UUID}-123456`] = 'base-sha';
+  state.refs['cape-request/capedev-Notch-7'] = 'base-sha';
   state.refs.master = 'advanced-sha';
   state.files['advanced-sha'] = `// header\n${'a'.repeat(32)}:capedonor // Alice\n`;
   await run(options);
@@ -295,7 +298,7 @@ test('label failure leaves the created PR and issue open for review', async () =
   assert.equal(state.failed.length, 1);
   assert.equal(state.pulls.length, 1);
   assert.equal(state.pulls[0].state, 'open');
-  assert.match(state.comments[0].body, /failed/i);
+  assert.match(state.comments.at(-1).body, /failed/i);
 });
 
 test('a new issue creates its own PR without searching or modifying existing PRs', async () => {
@@ -310,4 +313,19 @@ test('a new issue creates its own PR without searching or modifying existing PRs
     assert.match(state.pulls[1].body, /^Closes #7$/m);
     assert.ok(!state.events.some(event => ['list-prs', 'update-pr'].includes(event.type)));
   }
+});
+
+
+test('separate issues use distinct readable branches for the same account', async () => {
+  const { state, options } = githubFixture();
+  await run(options);
+  state.issue.number = 8;
+  state.issue.title = 'Cape Request';
+  options.context.issue.number = 8;
+  await run(options);
+  assert.deepEqual(state.events.filter(event => event.type === 'branch').map(event => event.ref), [
+    'refs/heads/cape-request/capedev-Notch-7',
+    'refs/heads/cape-request/capedev-Notch-8',
+  ]);
+  assert.ok(state.comments.every(comment => !comment.body.includes('<!--')));
 });
