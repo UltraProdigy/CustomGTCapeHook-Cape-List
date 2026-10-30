@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { parseRequest, resolveProfile, addCape, run, closeRequests } = require('./cape-request.cjs');
+const { parseRequest, resolveProfile, addCape, run } = require('./cape-request.cjs');
 
 const UUID = '069a79f444e94726a5befca90e38aaf5';
 const profile = { id: UUID, name: 'Notch' };
@@ -9,8 +9,9 @@ const form = ({ ign = 'notch', discord = '_No response_', roles = 'GTNH Develope
 const response = (status, body) => ({ status, ok: status === 200, json: async () => body });
 
 test('parses the developer-only form without a UUID field', () => {
-  assert.deepEqual(parseRequest(form()), { ign: 'notch', discord: '', roles: ['GTNH Developer'] });
+  assert.deepEqual(parseRequest(form()), { ign: 'notch', discord: '', role: 'GTNH Developer' });
   assert.throws(() => parseRequest(form({ roles: 'GTNH Contributor' })));
+  assert.throws(() => parseRequest(form({ roles: 'GTNH Developer, GTNH Developer' })));
   assert.throws(() => parseRequest(form() + '\n\n### Minecraft UUID\n\n' + UUID));
 });
 
@@ -63,16 +64,17 @@ test('inserts at both ends, preserves CRLF and missing final newline', () => {
   assert.equal(addCape('// header\n', profile), `// header\n${UUID}:capedev // Notch\n`);
 });
 
-test('refuses an ambiguous capedev layout instead of overwriting other groups', () => {
-  assert.throws(() => addCape(`${'a'.repeat(32)}:capedev // Alpha\n` +
-    `${'b'.repeat(32)}:capedonor // Beta\n${'c'.repeat(32)}:capedev // Charlie\n`, profile));
+test('inserts across separated and unnamed capedev entries without changing existing lines', () => {
+  const before = `${'a'.repeat(32)}:capedev // Alpha\n// note\n${'b'.repeat(32)}:capedonor // Beta\n${'c'.repeat(32)}:capedev\n\n${'f'.repeat(32)}:capedev // Zulu\n`;
+  const after = addCape(before, profile);
+  assert.equal(after, `${'a'.repeat(32)}:capedev // Alpha\n// note\n${'b'.repeat(32)}:capedonor // Beta\n${'c'.repeat(32)}:capedev\n\n${UUID}:capedev // Notch\n${'f'.repeat(32)}:capedev // Zulu\n`);
 });
 
 function githubFixture(content = '// header\n') {
   const state = {
     issue: { number: 7, title: 'Cape Request', body: form(), state: 'open', user: { login: 'request-author' } },
     refs: { master: 'base-sha' }, files: { 'base-sha': content }, pulls: [], comments: [],
-    events: [], failed: [], labels: [],
+    events: [], failed: [], labels: ['Chore'],
   };
   const record = (type, params) => state.events.push({ type, ...params });
   const notFound = () => Object.assign(new Error('Not Found'), { status: 404 });
@@ -91,6 +93,7 @@ function githubFixture(content = '// header\n') {
         return { data: structuredClone(state.issue) };
       },
       getLabel: async () => {
+        record('get-label', {});
         if (!state.labels.includes('Chore')) throw notFound();
         return { data: { name: 'Chore' } };
       },
@@ -143,7 +146,7 @@ function githubFixture(content = '// header\n') {
     state,
     options: {
       github: { rest, paginate: async (method, params) => (await method(params)).data },
-      context: { repo: { owner: 'example', repo: 'capes' }, issue: { number: 7 } },
+      context: { repo: { owner: 'example', repo: 'capes' }, issue: { number: 7 }, runId: 123456 },
       core: { setFailed: message => state.failed.push(message), error: () => {}, info: () => {} },
       fetch: async () => response(200, profile),
     },
@@ -160,7 +163,7 @@ test('opens a labeled one-file PR that closes the issue on merge', async () => {
   assert.equal(Buffer.from(commit.content, 'base64').toString(), `// header\n${UUID}:capedev // Notch\n`);
   const pr = state.events.find(event => event.type === 'pr');
   assert.equal(pr.base, 'master');
-  assert.equal(pr.head, `cape-request/capedev-${UUID}`);
+  assert.equal(pr.head, `cape-request/capedev-${UUID}-123456`);
   assert.match(pr.body, /Discord Username: `DreamMasterXXL`/);
   assert.match(pr.body, /GTNH Roles: GTNH Developer/);
   assert.match(pr.body, /GitHub Username: @request-author/);
@@ -173,6 +176,8 @@ test('opens a labeled one-file PR that closes the issue on merge', async () => {
   assert.deepEqual(state.events.find(event => event.type === 'labels').labels, ['Chore']);
   assert.match(state.comments[0].body, /pull\/42/);
   assert.deepEqual(state.failed, []);
+  assert.ok(!state.events.some(event => ['get-label', 'create-label'].includes(event.type)));
+  assert.ok(!state.events.some(event => ['list-prs', 'update-pr'].includes(event.type)));
 });
 
 test('closes an existing capedev request as not planned without opening a PR', async () => {
@@ -223,15 +228,6 @@ test('a failed PR creation is recoverable without another branch or commit', asy
   assert.match(state.comments[0].body, /pull\/42/);
 });
 
-test('an existing open PR is reused for a second request for the same UUID', async () => {
-  const { state, options } = githubFixture();
-  state.pulls.push({ head: { ref: `cape-request/capedev-${UUID}`, repo: { full_name: 'example/capes' } }, number: 42, state: 'open', html_url: 'https://github.com/example/capes/pull/42' });
-  await run(options);
-  assert.equal(state.issue.state, 'open');
-  assert.ok(!state.events.some(event => ['branch', 'commit', 'pr'].includes(event.type)));
-  assert.ok(state.events.some(event => event.type === 'labels' && event.issue_number === 42));
-});
-
 test('a closed PR does not block a fresh request branch from current master', async () => {
   for (const merged of [false, true]) {
     const { state, options } = githubFixture();
@@ -242,10 +238,10 @@ test('a closed PR does not block a fresh request branch from current master', as
     await run(options);
     assert.deepEqual(state.failed, []);
     assert.equal(state.pulls.length, 2);
-    assert.equal(state.pulls[1].head.ref, oldBranch + '-2');
+    assert.equal(state.pulls[1].head.ref, oldBranch + '-123456');
     assert.equal(state.events.find(event => event.type === 'branch').sha, 'base-sha');
     assert.equal(state.issue.state, 'open');
-    assert.match(state.comments[0].body, /merged or closed/);
+    assert.match(state.comments[0].body, /when the PR is merged\./);
     assert.doesNotMatch(state.comments[0].body, /previous PR|maintainer must review/i);
   }
 });
@@ -260,16 +256,9 @@ test('unrelated issues, closed issues, and pull requests are ignored', async () 
   }
 });
 
-test('invalid manual issue numbers fail before contacting GitHub', async () => {
-  const { state, options } = githubFixture();
-  await run({ ...options, issueNumber: NaN });
-  assert.equal(state.failed.length, 1);
-  assert.deepEqual(state.events, []);
-});
-
 test('an uncommitted branch is recovered even if master has advanced', async () => {
   const { state, options } = githubFixture();
-  state.refs[`cape-request/capedev-${UUID}`] = 'base-sha';
+  state.refs[`cape-request/capedev-${UUID}-123456`] = 'base-sha';
   state.refs.master = 'advanced-sha';
   state.files['advanced-sha'] = `// header\n${'a'.repeat(32)}:capedonor // Alice\n`;
   await run(options);
@@ -278,7 +267,7 @@ test('an uncommitted branch is recovered even if master has advanced', async () 
   assert.ok(!state.events.some(event => event.type === 'branch'));
 });
 
-test('an IGN edited during lookup is left open for the next run', async () => {
+test('an IGN edited during lookup aborts the current run', async () => {
   const { state, options } = githubFixture();
   options.fetch = async () => {
     state.issue.body = form({ ign: 'SomeoneElse' });
@@ -298,119 +287,27 @@ test('an issue edited while the PR is being created is not closed against stale 
   assert.ok(!state.events.some(event => event.type === 'close'));
 });
 
-test('a reused PR gains a closing reference for the new request', async () => {
-  const { state, options } = githubFixture();
-  state.pulls.push({ head: { ref: `cape-request/capedev-${UUID}`, repo: { full_name: 'example/capes' } }, number: 42, state: 'open', body: 'Closes #3\n\nGitHub Username: @first-requester', html_url: 'https://github.com/example/capes/pull/42' });
-  await run(options);
-  assert.match(state.pulls[0].body, /^Closes #3$/m);
-  assert.match(state.pulls[0].body, /^Closes #7$/m);
-  assert.match(state.pulls[0].body, /@request-author/);
-  assert.equal(state.issue.state, 'open');
-});
-
-test('label failure leaves the issue open and can be retried on the same PR', async () => {
+test('label failure leaves the created PR and issue open for review', async () => {
   const { state, options } = githubFixture();
   state.failLabel = true;
   await run(options);
   assert.equal(state.issue.state, 'open');
   assert.equal(state.failed.length, 1);
-  state.failLabel = false;
-  await run(options);
   assert.equal(state.pulls.length, 1);
-  assert.equal(state.events.filter(event => event.type === 'create-label').length, 1);
-  assert.ok(state.events.filter(event => event.type === 'labels').length >= 2);
+  assert.equal(state.pulls[0].state, 'open');
+  assert.match(state.comments[0].body, /failed/i);
 });
 
-function closedPRFixture() {
-  const fixture = githubFixture();
-  const pr = {
-    number: 42, state: 'closed', merged: false, body: 'Closes #7\n\nMinecraft IGN: `Notch`',
-    base: { ref: 'master' },
-    head: { ref: 'cape-request/capedev-' + UUID, repo: { full_name: 'example/capes' } },
-  };
-  fixture.state.issue.title = 'Cape Request: Notch';
-  fixture.state.currentPR = pr;
-  fixture.options.context.payload = { action: 'closed', pull_request: structuredClone(pr) };
-  return fixture;
-}
-
-test('closing an unmerged automation PR closes its linked cape request as not planned', async () => {
-  const { state, options } = closedPRFixture();
-  await closeRequests(options);
-  assert.equal(state.issue.state, 'closed');
-  assert.equal(state.issue.state_reason, 'not_planned');
-});
-
-test('merged or reopened PRs do not mark requests as not planned', async () => {
-  for (const change of [{ merged: true }, { state: 'open' }]) {
-    const { state, options } = closedPRFixture();
-    Object.assign(state.currentPR, change);
-    await closeRequests(options);
-    assert.equal(state.issue.state, 'open');
+test('a new issue creates its own PR without searching or modifying existing PRs', async () => {
+  for (const branch of ['manual-cape-change', 'cape-request/capedev-' + UUID]) {
+    const { state, options } = githubFixture();
+    const existing = { number: 40, state: 'open', body: 'Existing PR', head: { ref: branch, repo: { full_name: 'example/capes' } } };
+    state.pulls.push(existing);
+    await run(options);
+    assert.equal(state.pulls.length, 2);
+    assert.equal(existing.body, 'Existing PR');
+    assert.equal(existing.state, 'open');
+    assert.match(state.pulls[1].body, /^Closes #7$/m);
+    assert.ok(!state.events.some(event => ['list-prs', 'update-pr'].includes(event.type)));
   }
-});
-
-test('PR closure ignores fork branches, unrelated branches, and non-cape issues', async () => {
-  for (const mutate of [
-    f => { f.options.context.payload.pull_request.head.repo.full_name = 'someone/fork'; },
-    f => { f.options.context.payload.pull_request.head.ref = 'unrelated'; },
-    f => { f.state.issue.title = 'Bug report'; },
-  ]) {
-    const f = closedPRFixture();
-    mutate(f);
-    await closeRequests(f.options);
-    assert.equal(f.state.issue.state, 'open');
-  }
-});
-
-test('editing the IGN detaches the old PR even after validation feedback replaced its comment', async () => {
-  const { state, options } = githubFixture();
-  await run(options);
-  const oldPR = state.pulls[0];
-  state.issue.body = form({ ign: 'invalid name' });
-  await run(options);
-  state.issue.body = form({ ign: 'OtherUser' });
-  options.fetch = async () => response(200, { id: 'd'.repeat(32), name: 'OtherUser' });
-  await run(options);
-  assert.equal(oldPR.state, 'closed');
-  assert.doesNotMatch(oldPR.body, /^Closes #7$/m);
-  assert.equal(state.pulls.length, 2);
-  assert.match(state.pulls[1].body, /^Closes #7$/m);
-  assert.equal(state.issue.state, 'open');
-  assert.equal(state.issue.title, 'Cape Request: OtherUser');
-});
-
-test('declining a PR does not close a request whose IGN has since changed', async () => {
-  const { state, options } = closedPRFixture();
-  state.issue.body = form({ ign: 'OtherUser' });
-  await closeRequests(options);
-  assert.equal(state.issue.state, 'open');
-});
-
-test('an open retry PR is reused after earlier PRs closed', async () => {
-  const { state, options } = githubFixture();
-  state.pulls.push({ number: 42, state: 'closed', head: { ref: 'cape-request/capedev-' + UUID, repo: { full_name: 'example/capes' } } });
-  state.pulls.push({ number: 43, state: 'open', body: 'Closes #7', html_url: 'https://github.com/example/capes/pull/43', head: { ref: 'cape-request/capedev-' + UUID + '-2', repo: { full_name: 'example/capes' } } });
-  await run(options);
-  assert.equal(state.pulls.length, 2);
-  assert.ok(!state.events.some(event => ['branch', 'commit', 'pr'].includes(event.type)));
-  assert.match(state.comments[0].body, /pull\/43/);
-});
-
-test('closing an unmerged retry PR still closes its request as not planned', async () => {
-  const { state, options } = closedPRFixture();
-  options.context.payload.pull_request.head.ref += '-2';
-  state.currentPR.head.ref += '-2';
-  await closeRequests(options);
-  assert.equal(state.issue.state_reason, 'not_planned');
-});
-
-test('a delayed old PR closure does not close an issue with a new retry PR', async () => {
-  const { state, options } = closedPRFixture();
-  state.pulls.push(state.currentPR);
-  await run(options);
-  assert.equal(state.pulls.length, 2);
-  assert.equal(state.pulls[1].state, 'open');
-  await closeRequests(options);
-  assert.equal(state.issue.state, 'open');
 });

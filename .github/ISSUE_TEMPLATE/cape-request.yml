@@ -5,8 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        A pull request will be prepared for maintainer review before the cape is granted.
         You do not need to edit the title; it will be set automatically from your Minecraft IGN.
+
+        A pull request will be prepared for maintainer review before the cape is granted.
   - type: input
     id: discord
     attributes:

@@ -1,32 +1,14 @@
-name: Cape request
+name: Cape Request
 
 on:
   issues:
-    types: [opened, edited, reopened]
-  pull_request_target:
-    types: [closed]
-  workflow_dispatch:
-    inputs:
-      issue_number:
-        description: Open cape request issue number to retry
-        required: true
-        type: string
+    types: [opened]
 
 permissions: {}
 
-# Serialize shared PR updates without discarding pending requests.
-concurrency:
-  group: cape-request
-  queue: max
-  cancel-in-progress: false
-
 jobs:
   process:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'issues' &&
-      (startsWith(github.event.issue.title, 'Cape Request') ||
-      startsWith(github.event.issue.title, '[Cape Request]:')))
+    if: startsWith(github.event.issue.title, 'Cape Request')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -35,39 +17,13 @@ jobs:
       pull-requests: write
     steps:
       - name: Check out trusted automation
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@v6
         with:
           ref: master
           persist-credentials: false
       - name: Process cape request
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        env:
-          REQUEST_ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}
+        uses: actions/github-script@v8
         with:
           script: |
             const { run } = require('./.github/scripts/cape-request.cjs');
-            await run({
-              github, context, core,
-              issueNumber: Number(process.env.REQUEST_ISSUE_NUMBER),
-            });
-  close-declined-request:
-    if: github.event_name == 'pull_request_target' && !github.event.pull_request.merged
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: read
-    steps:
-      # Always use master, never code from the pull request being closed.
-      - name: Check out trusted automation
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: master
-          persist-credentials: false
-      - name: Close declined cape requests
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
-        with:
-          script: |
-            const { closeRequests } = require('./.github/scripts/cape-request.cjs');
-            await closeRequests({ github, context });
+            await run({ github, context, core });
